@@ -1,5 +1,10 @@
 # Skin Importer
 
+<p align="center">
+  <a href=""><img src="https://img.shields.io/github/downloads/YeetDisDude/skinimporter/total.svg"></a>
+  <a href=""><img src="https://img.shields.io/github/v/release/YeetDisDude/skinimporter"></a>
+</p>
+
 Simple app for Pixel Gun 3D to be able to import custom skins
 
 ## Features
