@@ -8,6 +8,8 @@ Simple app for Pixel Gun 3D to be able to import custom skins
 - Copy skins from a player by Player ID
 - Manage already added skins (refresh and delete)
 - Clear modded skin registry values
+/images/img1.png
+/images/img2.png
 
 ## Requirements
 
