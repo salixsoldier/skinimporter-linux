@@ -11,7 +11,7 @@ SPECFILE = f"{APP_NAME}.spec"
 DISTFOLDER = "dist"
 BUILDFOLDER = "build"
 BUILD_VENV = ".build_venv"
-REQUIRED_PACKAGES = ["pyinstaller", "customtkinter", "requests", "pillow"]
+REQUIRED_PACKAGES = ["pyinstaller", "customtkinter", "requests", "pillow", "colorama"]
 
 
 def project_files_for_data(base_dir: str) -> list[str]:
@@ -65,9 +65,9 @@ def main() -> None:
         venv_python,
         "-m",
         "PyInstaller",
-        "--noconsole",
         "--clean",
         "--onefile",
+        "--noconsole",
         "--name",
         APP_NAME,
         "--icon",

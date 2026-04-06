@@ -10,9 +10,39 @@ import tkinter.messagebox
 import customtkinter
 import requests
 from PIL import Image
+from datetime import datetime
+from colorama import Fore, Style, init
 
-from skinimporter import add_skins, append_skin, png_to_base64, clear_modded_skins, get_added_skins, delete_skin
-from skin_utils import get_skin_size, is_valid_skin_size
+init(autoreset=True)
+
+from skinimporter import add_skins, append_skin, clear_modded_skins, get_added_skins, delete_skin
+from skin_utils import get_skin_size, is_valid_skin_size, is_skin_size_64x64, get_import_ready_skin_base64
+
+def log_message(message_type: str, title: str, message: str):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    if message_type == "INFO":
+        color = Fore.CYAN
+    elif message_type == "ERROR":
+        color = Fore.RED
+    elif message_type == "WARNING":
+        color = Fore.YELLOW
+    else:
+        color = Fore.WHITE
+    
+    print(f"{color}[{timestamp}] [{message_type}] {title}: {message}{Style.RESET_ALL}")
+
+def show_info(title: str, message: str):
+    log_message("INFO", title, message)
+    tkinter.messagebox.showinfo(title, message)
+
+def show_error(title: str, message: str):
+    log_message("ERROR", title, message)
+    tkinter.messagebox.showerror(title, message)
+
+def show_warning(title: str, message: str):
+    log_message("WARNING", title, message)
+    tkinter.messagebox.showwarning(title, message)
 
 customtkinter.set_appearance_mode("System")  # Modes: "System" (standard), "Dark", "Light"
 customtkinter.set_default_color_theme("blue")  # Themes: "blue" (standard), "green", "dark-blue"
@@ -21,7 +51,7 @@ BUTTON_FG_COLOR = "#7C3AED"
 BUTTON_HOVER_COLOR = "#5B21B6"
 BUTTON_TEXT_COLOR = "white"
 
-VERSION = "1.0"
+VERSION = "1.2"
 
 class App(customtkinter.CTk):
     def __init__(self):
@@ -322,7 +352,7 @@ class App(customtkinter.CTk):
 
             upload_desc = customtkinter.CTkLabel(
                 frame,
-                text="Add your skin files that are 64x32, then import it.",
+                text="Add skin files (64x32, 64x64, or any 2:1 size), then import.",
                 anchor="w",
                 justify="left",
                 font=customtkinter.CTkFont(size=12)
@@ -529,12 +559,12 @@ class App(customtkinter.CTk):
 
     def _add_copy_skin(self, skin_base64: str, skin_name: str):
         if not skin_base64:
-            tkinter.messagebox.showerror("Error", "No skin data available for this entry.")
+            show_error("Error", "No skin data available for this entry.")
             return
         try:
             skin_id = append_skin(skin_base64, skin_name)
         except OSError as error:
-            tkinter.messagebox.showerror("Error", f"Could not write skin to registry.\n\n{error}")
+            show_error("Error", f"Could not write skin to registry.\n\n{error}")
             return
         self._show_notification(
             f"'{skin_name}' added as skin ID {skin_id}. Saved on this device.",
@@ -636,7 +666,7 @@ class App(customtkinter.CTk):
         try:
             delete_skin(skin_id)
         except OSError as error:
-            tkinter.messagebox.showerror("Error", f"Could not delete skin from registry.\n\n{error}")
+            show_error("Error", f"Could not delete skin from registry.\n\n{error}")
             return
 
         self._show_notification(f"Deleted '{skin_name}' (ID {skin_id}).")
@@ -653,11 +683,18 @@ class App(customtkinter.CTk):
             self._add_skin_preview(path)
 
     def _add_skin_preview(self, path):
-        img = Image.open(path).resize((128, 64), Image.NEAREST)
-        ctk_img = customtkinter.CTkImage(light_image=img, dark_image=img, size=(128, 64))
-        self._preview_images.append(ctk_img)
         image_size = get_skin_size(path)
-        is_valid_size = is_valid_skin_size(path)
+        preview_width = 128
+        preview_height = max(1, int(round(preview_width * (image_size[1] / image_size[0]))))
+        img = Image.open(path).resize((preview_width, preview_height), Image.NEAREST)
+        ctk_img = customtkinter.CTkImage(
+            light_image=img,
+            dark_image=img,
+            size=(preview_width, preview_height),
+        )
+        self._preview_images.append(ctk_img)
+        is_convertible_64x64 = is_skin_size_64x64(path)
+        is_valid_size = is_valid_skin_size(path) or is_convertible_64x64
 
         card_index = len(self._preview_cards)
         col = card_index % self._preview_cols
@@ -675,6 +712,8 @@ class App(customtkinter.CTk):
         name_label.grid(row=1, column=0, padx=8, pady=(0, 4))
 
         size_text = f"{image_size[0]}x{image_size[1]}"
+        if is_convertible_64x64:
+            size_text = f"{size_text} - will auto-convert to 64x32"
         if not is_valid_size:
             size_text = f"{size_text} - expected 64x32 or 2:1"
 
@@ -722,12 +761,12 @@ class App(customtkinter.CTk):
 
     def import_skin_files(self):
         if not self._preview_cards:
-            tkinter.messagebox.showinfo("Import", "No skin files selected.")
+            show_info("Import", "No skin files selected.")
             return
 
         invalid_files = [os.path.basename(entry["path"]) for entry in self._preview_cards if not entry["valid_size"]]
         if invalid_files:
-            tkinter.messagebox.showerror(
+            show_error(
                 "Invalid Skin Size",
                 "These files are not 64x32 or another 2:1 size:\n\n" + "\n".join(invalid_files)
             )
@@ -739,17 +778,17 @@ class App(customtkinter.CTk):
         imported_ids = []
         try:
             for path, skin_name in zip(image_paths, skin_names_list):
-                skin_b64 = png_to_base64(path)
+                skin_b64 = get_import_ready_skin_base64(path)
                 skin_id = append_skin(skin_b64, skin_name)
                 imported_ids.append(skin_id)
         except OSError as error:
-            tkinter.messagebox.showerror("Import Failed", f"Could not write skins to the registry.\n\n{error}")
+            show_error("Import Failed", f"Could not write skins to the registry.\n\n{error}")
             return
         except ValueError as error:
-            tkinter.messagebox.showerror("Import Failed", str(error))
+            show_error("Import Failed", str(error))
             return
 
-        tkinter.messagebox.showinfo(
+        show_info(
             "Import Complete",
             f"Added {len(imported_ids)} skin(s).\n\n"
             + "\n".join(skin_names_list)
@@ -767,9 +806,9 @@ class App(customtkinter.CTk):
         try:
             clear_modded_skins()
         except OSError as error:
-            tkinter.messagebox.showerror("Error", f"Could not clear registry keys.\n\n{error}")
+            show_error("Error", f"Could not clear registry keys.\n\n{error}")
             return
-        tkinter.messagebox.showinfo("Done", "Modded skins have been cleared from the registry.")
+        show_info("Done", "Modded skins have been cleared from the registry.")
 
     def select_tab(self, index):
         if self.current_tab is not None:
@@ -790,5 +829,23 @@ class App(customtkinter.CTk):
 
 
 if __name__ == "__main__":
-    app = App()
-    app.mainloop()
+    print("\n" + "="*60)
+    print(f"Starting Skin Importer v{VERSION}")
+    print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("="*60 + "\n")
+    
+    try:
+        log_message("INFO", "APP", "Initializing application...")
+        app = App()
+        log_message("INFO", "APP", "Application initialized successfully")
+        app.mainloop()
+    except Exception as e:
+        import traceback
+        print("\n" + "="*60)
+        print("ERROR - Application crashed!")
+        print("="*60)
+        print(f"Reason: {e}")
+        print("-"*60)
+        traceback.print_exc()
+        print("="*60)
+        input("Press Enter to close this window...")
