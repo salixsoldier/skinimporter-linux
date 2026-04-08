@@ -34,6 +34,7 @@ adding these registry keys make the skins be saved to the device locally
 
 ## Notes
 
+- This method of adding skins is 100% safe and wont get you banned
 - Skin size must be 64x32 or another 2:1 ratio
 - You must reopen pg3d for the skins to appear if you already have it running
 - To save skins to cloud, edit the skin in-game and save it. The skins are saved locally on the devicce when they are added
