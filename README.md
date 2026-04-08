@@ -15,7 +15,7 @@ Simple app for Pixel Gun 3D to be able to import custom skins
 - Clear modded skin registry values
 ![image 1](/images/img1.png)
 ![image 2](/images/img2.png)
-YouTube Tutorial - https://youtu.be/sAWJafmWXWc
+YouTube Tutorial - [https://youtu.be/sAWJafmWXWc](https://youtu.be/wVU7yM4ZNLE)
 
 ## Requirements
 
