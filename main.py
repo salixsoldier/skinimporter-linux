@@ -17,10 +17,13 @@ Changes from the upstream Windows version
 6.  Icon loading uses .png only (no .ico, which requires Windows).
 7.  The app ID call (SetCurrentProcessExplicitAppUserModelID) is silently
     skipped (the try/except was already there in the original).
-8.  Mouse wheel scrolling enabled on all scrollable frames (Linux doesn't
-    bind it automatically in CustomTkinter).
-9.  File picker uses kdialog (KDE native) when available, falls back to
-    tkinter's built-in dialog otherwise.
+8.  Mouse wheel scrolling enabled on all scrollable frames.  Each frame
+    gets its own per-canvas binding instead of bind_all, which prevents
+    all frames scrolling simultaneously.
+9.  File picker uses zenity (XDG portal, works on Wayland+X11), then
+    kdialog (KDE native), then tkinter fallback.
+10. Browse Skins folder path is persisted in the app config so it
+    survives restarts.
 """
 
 import io
@@ -75,32 +78,44 @@ def show_warning(title: str, message: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Native file picker (kdialog on KDE, fallback to tkinter)
+# Native file/folder picker
 # ---------------------------------------------------------------------------
-
-def _has_kdialog() -> bool:
-    return shutil.which("kdialog") is not None
-
 
 def pick_files(title: str = "Select files", filetypes: str = "*.png") -> list[str]:
     """
     Open a file picker and return a list of selected file paths.
-    Uses kdialog on KDE Plasma, falls back to tkinter otherwise.
-    filetypes is passed to kdialog as a glob pattern.
+    Tries zenity (XDG portal — works on KDE/GNOME, Wayland and X11),
+    then kdialog, then tkinter fallback.
     """
-    if _has_kdialog():
+    # zenity via XDG desktop portal — best cross-DE support
+    if shutil.which("zenity"):
+        try:
+            result = subprocess.run(
+                ["zenity", "--file-selection", "--multiple",
+                 "--file-filter", f"PNG files | {filetypes}",
+                 "--title", title],
+                capture_output=True, text=True, timeout=120
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                # zenity separates multiple paths with '|'
+                return [p for p in result.stdout.strip().split("|") if p]
+        except Exception:
+            pass
+
+    # kdialog — KDE native
+    if shutil.which("kdialog"):
         try:
             result = subprocess.run(
                 ["kdialog", "--title", title, "--getopenfilename",
                  os.path.expanduser("~"), filetypes, "--multiple"],
-                capture_output=True, text=True
+                capture_output=True, text=True, timeout=120
             )
             if result.returncode == 0 and result.stdout.strip():
-                # kdialog returns newline-separated paths
                 return [p for p in result.stdout.strip().splitlines() if p]
         except Exception:
             pass
-    # fallback
+
+    # tkinter fallback
     paths = tkinter.filedialog.askopenfilenames(
         title=title,
         filetypes=[("PNG files", "*.png"), ("All files", "*.*")]
@@ -111,49 +126,72 @@ def pick_files(title: str = "Select files", filetypes: str = "*.png") -> list[st
 def pick_folder(title: str = "Select folder") -> str | None:
     """
     Open a folder picker and return the chosen path, or None if cancelled.
-    Uses kdialog on KDE Plasma, falls back to tkinter otherwise.
+    Tries zenity (XDG portal — works on KDE/GNOME, Wayland and X11),
+    then kdialog, then tkinter fallback.
     """
-    if _has_kdialog():
+    # zenity — XDG desktop portal, opens Dolphin on KDE Plasma 6
+    if shutil.which("zenity"):
+        try:
+            result = subprocess.run(
+                ["zenity", "--file-selection", "--directory", "--title", title],
+                capture_output=True, text=True, timeout=120
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+            if result.returncode == 1:
+                return None  # user cancelled; don't fall through to next picker
+        except Exception:
+            pass
+
+    # kdialog — KDE native fallback
+    if shutil.which("kdialog"):
         try:
             result = subprocess.run(
                 ["kdialog", "--title", title, "--getexistingdirectory",
                  os.path.expanduser("~")],
-                capture_output=True, text=True
+                capture_output=True, text=True, timeout=120
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()
+            if result.returncode == 1:
+                return None
         except Exception:
             pass
-    # fallback
+
+    # tkinter fallback
     folder = tkinter.filedialog.askdirectory(title=title)
     return folder or None
 
 
 # ---------------------------------------------------------------------------
-# Mouse wheel scroll binding
+# Mouse wheel scroll binding (per-canvas, avoids bind_all conflicts)
 # ---------------------------------------------------------------------------
 
-def _bind_mousewheel(widget: tkinter.Widget) -> None:
+def _bind_mousewheel(widget: customtkinter.CTkScrollableFrame) -> None:
     """
-    Bind mouse wheel events to a CustomTkinter scrollable frame.
-    On Linux, CustomTkinter doesn't attach these automatically.
+    Bind mouse wheel events directly to the scrollable frame's internal canvas.
+
+    Using bind_all() (as the original code did) attaches the handler to the
+    root window, so *every* scroll frame scrolls when any one is moused over.
+    Binding directly to the canvas/widget avoids that cross-tab interference.
     """
     canvas = getattr(widget, "_parent_canvas", None)
     if canvas is None:
         return
 
     def on_wheel(event: tkinter.Event) -> None:
-        # Button-4 = scroll up, Button-5 = scroll down (X11)
+        # X11 sends Button-4 (up) / Button-5 (down)
         if event.num == 4:
             canvas.yview_scroll(-1, "units")
         elif event.num == 5:
             canvas.yview_scroll(1, "units")
         else:
-            # Delta-based (some setups send this instead)
+            # Some setups / Wayland send delta-based events
             canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-    canvas.bind_all("<Button-4>", on_wheel)
-    canvas.bind_all("<Button-5>", on_wheel)
+    for seq in ("<Button-4>", "<Button-5>", "<MouseWheel>"):
+        canvas.bind(seq, on_wheel)
+        widget.bind(seq, on_wheel)
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +206,9 @@ BUTTON_HOVER_COLOR = "#5B21B6"
 BUTTON_TEXT_COLOR = "white"
 
 VERSION = "1.3-linux"
+
+# Config key for the persisted browse-skins folder
+_CFG_BROWSE_FOLDER = "browse_skins_folder"
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +319,6 @@ class App(customtkinter.CTk):
         )
 
     def _apply_prefix(self, path: str) -> bool:
-        """Validate, save, and activate a new prefix path. Returns True on success."""
         if not _pp._is_valid_prefix(path):
             show_error(
                 "Invalid Prefix",
@@ -309,7 +349,7 @@ class App(customtkinter.CTk):
             self._build_howto_tab(frame)
 
     # -----------------------------------------------------------------------
-    # Tab 0 — Upload Skin  (unchanged from original)
+    # Tab 0 — Upload Skin
     # -----------------------------------------------------------------------
 
     def _build_upload_tab(self, frame: customtkinter.CTkFrame) -> None:
@@ -356,11 +396,7 @@ class App(customtkinter.CTk):
         self._preview_cards: list[dict] = []
 
     # -----------------------------------------------------------------------
-    # Tab 1 — Browse Skins  (replaces "Copy Skins" / modfs lookup)
-    #
-    # The user picks a local folder; all .png files in it are shown as
-    # cards with an "Add" button, just like the original copy-skins cards.
-    # No network calls are made.
+    # Tab 1 — Browse Skins
     # -----------------------------------------------------------------------
 
     def _build_browse_tab(self, frame: customtkinter.CTkFrame) -> None:
@@ -405,12 +441,22 @@ class App(customtkinter.CTk):
 
         self._browse_skin_images: list = []
 
+        # Restore last-used folder from config
+        saved_folder = _pp.load_config().get(_CFG_BROWSE_FOLDER, "")
+        if saved_folder and os.path.isdir(saved_folder):
+            self.browse_folder_entry.insert(0, saved_folder)
+            self.after(100, lambda: self._load_skins_from_folder(saved_folder))
+
     def _pick_skin_folder(self) -> None:
         folder = pick_folder(title="Select folder containing skin PNGs")
         if not folder:
             return
         self.browse_folder_entry.delete(0, "end")
         self.browse_folder_entry.insert(0, folder)
+        # Persist to config
+        cfg = _pp.load_config()
+        cfg[_CFG_BROWSE_FOLDER] = folder
+        _pp.save_config(cfg)
         self._load_skins_from_folder(folder)
 
     def _load_skins_from_folder(self, folder: str) -> None:
@@ -491,6 +537,9 @@ class App(customtkinter.CTk):
                 command=lambda b=skin["skin"], n=skin["name"]: self._add_browse_skin(b, n)
             ).grid(row=2, column=0, padx=8, pady=(0, 8))
 
+        # Re-apply scroll binding after repopulating (children have changed)
+        _bind_mousewheel(self.browse_scroll)
+
     def _add_browse_skin(self, skin_base64: str, skin_name: str) -> None:
         if not self._prefix_path:
             show_error("No Prefix", "Proton prefix not set. Go to Settings to fix this.")
@@ -510,7 +559,7 @@ class App(customtkinter.CTk):
                 self._populate_browse_results(self._browse_skins_data)
 
     # -----------------------------------------------------------------------
-    # Tab 2 — Manage Skins  (unchanged logic)
+    # Tab 2 — Manage Skins
     # -----------------------------------------------------------------------
 
     def _build_manage_tab(self, frame: customtkinter.CTkFrame) -> None:
@@ -551,7 +600,7 @@ class App(customtkinter.CTk):
         self._manage_skin_images: list = []
 
     # -----------------------------------------------------------------------
-    # Tab 3 — Settings  (adds Proton Prefix section)
+    # Tab 3 — Settings
     # -----------------------------------------------------------------------
 
     def _build_settings_tab(self, frame: customtkinter.CTkFrame) -> None:
@@ -562,7 +611,6 @@ class App(customtkinter.CTk):
             font=customtkinter.CTkFont(size=18, weight="bold"), anchor="w"
         ).grid(row=0, column=0, padx=10, pady=(10, 2), sticky="ew")
 
-        # -- Proton Prefix section --
         customtkinter.CTkLabel(
             frame, text="Proton Prefix",
             anchor="w", font=customtkinter.CTkFont(size=13, weight="bold")
@@ -609,14 +657,12 @@ class App(customtkinter.CTk):
         )
         self.prefix_status_label.grid(row=5, column=0, padx=10, pady=(0, 8), sticky="w")
 
-        # -- Skin actions --
         customtkinter.CTkButton(
             frame, text="Clear Modded Skins", width=180,
             fg_color=BUTTON_FG_COLOR, hover_color=BUTTON_HOVER_COLOR,
             text_color=BUTTON_TEXT_COLOR, command=self.clear_modded_skins
         ).grid(row=6, column=0, padx=10, pady=(0, 0), sticky="nw")
 
-        # -- Credits --
         customtkinter.CTkLabel(
             frame, text="Credits",
             anchor="w", font=customtkinter.CTkFont(size=13, weight="bold")
@@ -657,7 +703,6 @@ class App(customtkinter.CTk):
             show_info("Prefix Saved", f"Proton prefix saved and activated:\n{path}")
 
     def _redetect_prefix(self) -> None:
-        # Clear saved override so find_proton_prefix does a fresh scan
         cfg = _pp.load_config()
         cfg.pop("proton_prefix_path", None)
         _pp.save_config(cfg)
@@ -677,14 +722,15 @@ class App(customtkinter.CTk):
             )
 
     # -----------------------------------------------------------------------
-    # Tab 4 — How to Use  (updated for Linux)
+    # Tab 4 — How to Use
     # -----------------------------------------------------------------------
 
     def _build_howto_tab(self, frame: customtkinter.CTkFrame) -> None:
         rows = [
             ("1) Upload skins", "Add skin files (64x32, 64x64, or any 2:1 size), then click Import."),
             ("2) Browse Skins",
-             "Pick a local folder of .png skin files and click Add on any skin you want."),
+             "Pick a local folder of .png skin files and click Add on any skin you want.\n"
+             "The last folder you used is remembered across restarts."),
             ("3) For skins to save permanently",
              "After importing, open the game, go to the skin editor, then save the skin — "
              "otherwise it is only stored on this device."),
@@ -925,6 +971,8 @@ class App(customtkinter.CTk):
                 command=lambda sid=skin.get("id", ""), n=skin.get("name", "Unknown"):
                     self._delete_managed_skin(sid, n)
             ).grid(row=1, column=1, padx=(0, 8), pady=(0, 8), sticky="w")
+
+        _bind_mousewheel(self.manage_scroll)
 
     def _on_manage_scroll_resize(self, event: tkinter.Event) -> None:
         cols = max(1, event.width // 250 - 1)
