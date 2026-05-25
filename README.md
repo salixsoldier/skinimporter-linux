@@ -1,51 +1,61 @@
-# Skin Importer
+# Skin Importer — Linux/Proton Fork
 
-<p align="center">
-  <a href=""><img src="https://img.shields.io/github/downloads/YeetDisDude/skinimporter/total.svg"></a>
-  <a href=""><img src="https://img.shields.io/github/v/release/YeetDisDude/skinimporter"></a>
-</p>
+A Linux-native fork of [YeetDisDude/skinimporter](https://github.com/YeetDisDude/skinimporter).
 
-Simple app for Pixel Gun 3D to be able to import custom skins
+## What changed from the original
 
-## Features
-
-- Upload local skin PNG files and import them
-- Copy skins from a player by Player ID
-- Manage already added skins (refresh and delete)
-- Clear modded skin registry values
-![image 1](/images/img1.png)
-![image 2](/images/img2.png)
-YouTube Tutorial - [https://youtu.be/sAWJafmWXWc](https://youtu.be/wVU7yM4ZNLE)
+| Area | Original (Windows) | This fork (Linux) |
+|---|---|---|
+| Registry backend | `winreg` (Windows API) | `wine_reg.py` — reads/writes Wine's `user.reg` text file directly |
+| Game path | Hardcoded Windows registry path | Auto-detected via Proton prefix scanner |
+| "Copy Skins" tab | Fetched player skins from modfs.top (now shut down) | Local folder browser — pick any folder of `.png` files |
+| Network calls | modfs.top API | None — fully offline |
+| Build output | `.exe` | Linux ELF binary |
+| Icon | `.ico` | `.png` |
 
 ## Requirements
 
-- Windows
-- Internet for Copy Skins search feature
+- Python 3.11+
+- Steam with Proton (game must have been launched at least once to create the prefix)
+- Pixel Gun 3D (Steam App ID 1047820)
 
-## Install
+```
+pip install -r requirements.txt
+python main.py
+```
 
-Download the app from the releases tab
+## Building a standalone binary
 
-## How it works
+PyInstaller:
+```
+python build.py
+```
 
-The app edits Pixel Gun 3D's registry keys at Software\Pixel Gun Team\Pixel Gun 3D and adds these registry keys: User Skins, User Name Skins, and Current Equiped Skin 
-adding these registry keys make the skins be saved to the device locally
+Nuitka (produces a faster binary, takes longer to compile):
+```
+python build_nuitka.py
+```
 
+## Proton prefix path
 
-## Notes
+The app auto-detects the prefix by scanning:
+- `~/.steam/steam/steamapps/compatdata/1047820/pfx/`
+- `~/.local/share/Steam/steamapps/compatdata/1047820/pfx/`
+- Flatpak: `~/.var/app/com.valvesoftware.Steam/data/Steam/steamapps/compatdata/1047820/pfx/`
+- Snap: `~/snap/steam/common/.steam/steam/steamapps/compatdata/1047820/pfx/`
+- Any extra Steam library folders listed in `libraryfolders.vdf`
 
-- This method of adding skins is 100% safe and wont get you banned
-- Skin size must be 64x32 or another 2:1 ratio OR 64x64 or another 1:1 ratio
-- You must reopen pg3d for the skins to appear if you already have it running
-- To save skins to cloud, edit the skin in-game and save it. The skins are saved locally on the devicce when they are added
+If auto-detection fails, go to **Settings → Proton Prefix** and set it manually.
+The path is saved to `~/.config/pg3d-skinimporter/config.json`.
 
+## File overview
 
-## Credits
-
-- Claude 💯💯💯💯
-- Stella - for the player [info lookup](https://modfs.top/tools/getplayerinfo)
-
-
-Made by YeetDisDude
-
-My Discord server - https://discord.gg/37SnuXSh
+| File | Purpose |
+|---|---|
+| `main.py` | GUI — CustomTkinter app |
+| `skinimporter.py` | Skin read/write logic (registry operations) |
+| `wine_reg.py` | Wine `user.reg` parser/writer (replaces `winreg`) |
+| `proton_path.py` | Proton prefix auto-detection and config |
+| `skin_utils.py` | Image validation and base64 helpers |
+| `build.py` | PyInstaller build script |
+| `build_nuitka.py` | Nuitka build script |

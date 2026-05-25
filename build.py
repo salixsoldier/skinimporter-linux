@@ -1,17 +1,29 @@
+"""
+build.py — PyInstaller build script for the Linux fork.
+
+Changes from the original
+--------------------------
+- Output is a Linux ELF binary, not a .exe.
+- --noconsole replaced with --windowed (Tk apps on Linux still work fine
+  with the console visible, but --windowed suppresses it; both are valid).
+- --icon accepts a .png on Linux; .ico is Windows-only.
+- add-data separator is ':' on Linux (';' is Windows-only).
+- Source/destination paths updated for no .exe extension.
+"""
+
 import os
 import shutil
 import subprocess
-import sys
 import venv
 
 
-APP_NAME = "Skin Importer"
+APP_NAME = "skin-importer"
 ENTRY_FILE = "main.py"
 SPECFILE = f"{APP_NAME}.spec"
 DISTFOLDER = "dist"
 BUILDFOLDER = "build"
 BUILD_VENV = ".build_venv"
-REQUIRED_PACKAGES = ["pyinstaller", "customtkinter", "requests", "pillow", "colorama"]
+REQUIRED_PACKAGES = ["pyinstaller", "customtkinter", "pillow", "colorama"]
 
 
 def project_files_for_data(base_dir: str) -> list[str]:
@@ -20,15 +32,15 @@ def project_files_for_data(base_dir: str) -> list[str]:
         file_path = os.path.join(base_dir, file_name)
         if not os.path.isfile(file_path):
             continue
-        if file_name.lower().endswith(".exe"):
+        # skip executables and Python bytecode
+        if file_name.lower().endswith((".exe", ".pyc")):
             continue
         files.append(file_name)
     return files
 
 
 def venv_python_path(venv_dir: str) -> str:
-    if os.name == "nt":
-        return os.path.join(venv_dir, "Scripts", "python.exe")
+    # Linux always uses bin/python
     return os.path.join(venv_dir, "bin", "python")
 
 
@@ -59,53 +71,48 @@ def main() -> None:
     data_files = project_files_for_data(script_dir)
     add_data_args: list[str] = []
     for file_name in data_files:
-        add_data_args.extend(["--add-data", f"{file_name};."])
+        # Linux separator is ':' not ';'
+        add_data_args.extend(["--add-data", f"{file_name}:."])
+
+    icon_args: list[str] = []
+    if os.path.exists("icon.png"):
+        icon_args = ["--icon", "icon.png"]
 
     command = [
         venv_python,
-        "-m",
-        "PyInstaller",
+        "-m", "PyInstaller",
         "--clean",
         "--onefile",
-        "--noconsole",
-        "--name",
-        APP_NAME,
-        "--icon",
-        "icon.ico",
+        "--windowed",          # suppress the terminal window for the GUI
+        "--name", APP_NAME,
+        *icon_args,
         *add_data_args,
         ENTRY_FILE,
     ]
 
-    print("Building...")
+    print("Building with PyInstaller...")
     subprocess.run(command, check=True)
 
-    source_file = os.path.join(DISTFOLDER, f"{APP_NAME}.exe")
-    destination_file = os.path.join(script_dir, f"{APP_NAME}.exe")
+    source_file = os.path.join(DISTFOLDER, APP_NAME)          # no .exe
+    destination_file = os.path.join(script_dir, APP_NAME)
 
     if os.path.exists(destination_file):
         os.remove(destination_file)
 
     shutil.move(source_file, destination_file)
-    print(f"Built {APP_NAME}.exe")
+    os.chmod(destination_file, 0o755)
+    print(f"Built '{APP_NAME}' binary.")
+
     print("Cleaning up...")
-
-    if os.path.exists(SPECFILE):
-        os.remove(SPECFILE)
-        print(f"File '{SPECFILE}' deleted successfully.")
-    else:
-        print(f"File '{SPECFILE}' not found.")
-
-    if os.path.exists(DISTFOLDER):
-        shutil.rmtree(DISTFOLDER)
-        print(f"Folder '{DISTFOLDER}' deleted successfully.")
-    else:
-        print(f"Folder '{DISTFOLDER}' not found.")
-
-    if os.path.exists(BUILDFOLDER):
-        shutil.rmtree(BUILDFOLDER)
-        print(f"Folder '{BUILDFOLDER}' deleted successfully.")
-    else:
-        print(f"Folder '{BUILDFOLDER}' not found.")
+    for path in [SPECFILE, DISTFOLDER, BUILDFOLDER]:
+        if os.path.isfile(path):
+            os.remove(path)
+            print(f"Removed file: {path}")
+        elif os.path.isdir(path):
+            shutil.rmtree(path)
+            print(f"Removed folder: {path}")
+        else:
+            print(f"Not found (skipping): {path}")
 
 
 if __name__ == "__main__":

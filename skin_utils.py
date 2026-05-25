@@ -1,3 +1,10 @@
+"""
+skin_utils.py — skin image validation and base64 encoding helpers.
+
+No changes needed for Linux compatibility; this file was already
+platform-agnostic.  Kept identical to the original.
+"""
+
 import base64
 import io
 from PIL import Image

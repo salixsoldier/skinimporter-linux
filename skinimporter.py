@@ -1,42 +1,82 @@
+"""
+skinimporter.py — read/write PG3D skin data in the Wine registry.
+
+Changes from the original (Windows) version
+--------------------------------------------
+- ALL winreg imports and calls replaced with wine_reg + proton_path.
+- The registry key path uses forward slashes as Wine user.reg uses them
+  (Wine internally normalises to \\, but user.reg stores them as \\).
+- A module-level `init(prefix_path)` call must be made before anything
+  else; main.py calls this once the prefix has been resolved.
+- Everything else — skin IDs, JSON structure, hashed value names — is
+  identical to the original so existing registry data is fully compatible.
+"""
+
 import base64
 import json
 import os
 import re
-import winreg
 
+from wine_reg import RegFile, open_key, create_key, open_reg_file
+import proton_path as _pp
 
-REGISTRY_PATH = r"Software\Pixel Gun Team\Pixel Gun 3D"
+# ---------------------------------------------------------------------------
+# Registry constants  (same logical path as on Windows)
+# ---------------------------------------------------------------------------
+
+# Wine user.reg stores HKCU keys without the HKEY_CURRENT_USER prefix.
+# The path separator in the file is \\ (escaped backslash).
+REGISTRY_KEY_PATH = "Software\\\\Pixel Gun Team\\\\Pixel Gun 3D"
+
 USER_SKINS_VALUE = "User Skins"
 USER_NAME_SKINS_VALUE = "User Name Skins"
 CURRENT_EQUIPED_SKIN_VALUE = "Current Equiped Skin"
 STARTING_SKIN_ID = 1001
 
+# ---------------------------------------------------------------------------
+# Module-level state: the active RegFile
+# ---------------------------------------------------------------------------
 
-def png_to_base64(image_path: str) -> str:
-    with open(image_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode("ascii")
+_reg_file: RegFile | None = None
 
 
-def _find_hashed_value_names(key: winreg.HKEYType, base_name: str) -> list[str]:
-    pattern = re.compile(r'^' + re.escape(base_name) + r'_h\d+$')
+def init(prefix_path: str) -> None:
+    """
+    Initialise the module with the Proton prefix path.
+    Must be called before any skin operations.
+    """
+    global _reg_file
+    reg_path = _pp.user_reg_path(prefix_path)
+    _reg_file = open_reg_file(reg_path)
+
+
+def _get_reg() -> RegFile:
+    if _reg_file is None:
+        raise OSError(
+            "Registry not initialised. "
+            "Make sure a valid Proton prefix path is set in Settings."
+        )
+    return _reg_file
+
+
+# ---------------------------------------------------------------------------
+# Hashed value name helpers  (identical logic to original)
+# ---------------------------------------------------------------------------
+
+def _find_hashed_value_names(key_handle, base_name: str) -> list[str]:
+    pattern = re.compile(r"^" + re.escape(base_name) + r"_h\d+$")
     matches = []
-    try:
-        index = 0
-        while True:
-            value_name, _, _ = winreg.EnumValue(key, index)
-            if pattern.match(value_name):
-                matches.append(value_name)
-            index += 1
-    except OSError:
-        pass
+    for name, _ in key_handle.enum_values():
+        if pattern.match(name):
+            matches.append(name)
     return matches
 
 
-def _read_registry_json(key: winreg.HKEYType, value_name: str) -> dict[str, str]:
-    names_to_try = _find_hashed_value_names(key, value_name) + [value_name]
+def _read_registry_json(key_handle, value_name: str) -> dict[str, str]:
+    names_to_try = _find_hashed_value_names(key_handle, value_name) + [value_name]
     for name in names_to_try:
         try:
-            raw_value, _ = winreg.QueryValueEx(key, name)
+            raw_value = key_handle.query_value(name)
         except FileNotFoundError:
             continue
 
@@ -49,25 +89,34 @@ def _read_registry_json(key: winreg.HKEYType, value_name: str) -> dict[str, str]
             continue
 
         if isinstance(parsed, dict):
-            return {str(entry_key): str(entry_value) for entry_key, entry_value in parsed.items()}
+            return {str(k): str(v) for k, v in parsed.items()}
     return {}
 
 
-def _write_registry_json(key: winreg.HKEYType, value_name: str, value: dict[str, str]) -> None:
+def _write_registry_json(key_handle, value_name: str, value: dict[str, str]) -> None:
     json_str = json.dumps(value)
-    winreg.SetValueEx(key, value_name, 0, winreg.REG_SZ, json_str)
-    for hashed_name in _find_hashed_value_names(key, value_name):
-        winreg.SetValueEx(key, hashed_name, 0, winreg.REG_SZ, json_str)
+    key_handle.set_value(value_name, json_str)
+    for hashed_name in _find_hashed_value_names(key_handle, value_name):
+        key_handle.set_value(hashed_name, json_str)
+
+
+# ---------------------------------------------------------------------------
+# Public API  (same signatures as the original)
+# ---------------------------------------------------------------------------
+
+def png_to_base64(image_path: str) -> str:
+    with open(image_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode("ascii")
 
 
 def add_skins(skin_base64_list: list[str], skin_names_list: list[str]) -> list[str]:
     if len(skin_base64_list) != len(skin_names_list):
         raise ValueError("skin_base64_list and skin_names_list must have the same length")
-
     if not skin_base64_list:
         return []
 
-    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, REGISTRY_PATH) as registry_key:
+    reg = _get_reg()
+    with create_key(reg, REGISTRY_KEY_PATH) as key:
         user_skins: dict[str, str] = {}
         user_name_skins: dict[str, str] = {}
         next_skin_id = STARTING_SKIN_ID
@@ -80,27 +129,28 @@ def add_skins(skin_base64_list: list[str], skin_names_list: list[str]) -> list[s
             added_skin_ids.append(skin_id)
             next_skin_id += 1
 
-        _write_registry_json(registry_key, USER_SKINS_VALUE, user_skins)
-        _write_registry_json(registry_key, USER_NAME_SKINS_VALUE, user_name_skins)
+        _write_registry_json(key, USER_SKINS_VALUE, user_skins)
+        _write_registry_json(key, USER_NAME_SKINS_VALUE, user_name_skins)
 
         first_id = added_skin_ids[0]
-        winreg.SetValueEx(registry_key, CURRENT_EQUIPED_SKIN_VALUE, 0, winreg.REG_SZ, first_id)
-        for hashed_name in _find_hashed_value_names(registry_key, CURRENT_EQUIPED_SKIN_VALUE):
-            winreg.SetValueEx(registry_key, hashed_name, 0, winreg.REG_SZ, first_id)
+        key.set_value(CURRENT_EQUIPED_SKIN_VALUE, first_id)
+        for hashed_name in _find_hashed_value_names(key, CURRENT_EQUIPED_SKIN_VALUE):
+            key.set_value(hashed_name, first_id)
 
     return added_skin_ids
 
 
 def add_skins_from_files(image_paths: list[str]) -> list[str]:
-    skin_base64_list = [png_to_base64(image_path) for image_path in image_paths]
-    skin_names_list = [os.path.basename(image_path) for image_path in image_paths]
+    skin_base64_list = [png_to_base64(p) for p in image_paths]
+    skin_names_list = [os.path.basename(p) for p in image_paths]
     return add_skins(skin_base64_list, skin_names_list)
 
 
 def append_skin(skin_base64: str, skin_name: str) -> str:
-    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, REGISTRY_PATH) as registry_key:
-        user_skins = _read_registry_json(registry_key, USER_SKINS_VALUE)
-        user_name_skins = _read_registry_json(registry_key, USER_NAME_SKINS_VALUE)
+    reg = _get_reg()
+    with create_key(reg, REGISTRY_KEY_PATH) as key:
+        user_skins = _read_registry_json(key, USER_SKINS_VALUE)
+        user_name_skins = _read_registry_json(key, USER_NAME_SKINS_VALUE)
 
         existing_ids = [int(k) for k in user_skins.keys() if k.isdigit()]
         skin_id = str(max(existing_ids, default=STARTING_SKIN_ID - 1) + 1)
@@ -108,24 +158,25 @@ def append_skin(skin_base64: str, skin_name: str) -> str:
         user_skins[skin_id] = skin_base64
         user_name_skins[skin_id] = skin_name
 
-        _write_registry_json(registry_key, USER_SKINS_VALUE, user_skins)
-        _write_registry_json(registry_key, USER_NAME_SKINS_VALUE, user_name_skins)
+        _write_registry_json(key, USER_SKINS_VALUE, user_skins)
+        _write_registry_json(key, USER_NAME_SKINS_VALUE, user_name_skins)
 
         try:
-            winreg.QueryValueEx(registry_key, CURRENT_EQUIPED_SKIN_VALUE)
+            key.query_value(CURRENT_EQUIPED_SKIN_VALUE)
         except FileNotFoundError:
-            winreg.SetValueEx(registry_key, CURRENT_EQUIPED_SKIN_VALUE, 0, winreg.REG_SZ, skin_id)
-            for hashed_name in _find_hashed_value_names(registry_key, CURRENT_EQUIPED_SKIN_VALUE):
-                winreg.SetValueEx(registry_key, hashed_name, 0, winreg.REG_SZ, skin_id)
+            key.set_value(CURRENT_EQUIPED_SKIN_VALUE, skin_id)
+            for hashed_name in _find_hashed_value_names(key, CURRENT_EQUIPED_SKIN_VALUE):
+                key.set_value(hashed_name, skin_id)
 
     return skin_id
 
 
 def get_added_skins() -> list[dict[str, str]]:
+    reg = _get_reg()
     try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REGISTRY_PATH, 0, winreg.KEY_READ) as registry_key:
-            user_skins = _read_registry_json(registry_key, USER_SKINS_VALUE)
-            user_name_skins = _read_registry_json(registry_key, USER_NAME_SKINS_VALUE)
+        with open_key(reg, REGISTRY_KEY_PATH) as key:
+            user_skins = _read_registry_json(key, USER_SKINS_VALUE)
+            user_name_skins = _read_registry_json(key, USER_NAME_SKINS_VALUE)
     except FileNotFoundError:
         return []
 
@@ -144,9 +195,10 @@ def get_added_skins() -> list[dict[str, str]]:
 
 
 def delete_skin(skin_id: str) -> None:
-    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, REGISTRY_PATH) as registry_key:
-        user_skins = _read_registry_json(registry_key, USER_SKINS_VALUE)
-        user_name_skins = _read_registry_json(registry_key, USER_NAME_SKINS_VALUE)
+    reg = _get_reg()
+    with create_key(reg, REGISTRY_KEY_PATH) as key:
+        user_skins = _read_registry_json(key, USER_SKINS_VALUE)
+        user_name_skins = _read_registry_json(key, USER_NAME_SKINS_VALUE)
 
         if skin_id not in user_skins and skin_id not in user_name_skins:
             return
@@ -154,51 +206,50 @@ def delete_skin(skin_id: str) -> None:
         user_skins.pop(skin_id, None)
         user_name_skins.pop(skin_id, None)
 
-        _write_registry_json(registry_key, USER_SKINS_VALUE, user_skins)
-        _write_registry_json(registry_key, USER_NAME_SKINS_VALUE, user_name_skins)
+        _write_registry_json(key, USER_SKINS_VALUE, user_skins)
+        _write_registry_json(key, USER_NAME_SKINS_VALUE, user_name_skins)
 
         current_value = None
-        for current_name in _find_hashed_value_names(registry_key, CURRENT_EQUIPED_SKIN_VALUE) + [CURRENT_EQUIPED_SKIN_VALUE]:
+        for current_name in _find_hashed_value_names(key, CURRENT_EQUIPED_SKIN_VALUE) + [CURRENT_EQUIPED_SKIN_VALUE]:
             try:
-                current_value, _ = winreg.QueryValueEx(registry_key, current_name)
+                current_value = key.query_value(current_name)
                 break
             except FileNotFoundError:
                 continue
 
         if str(current_value) == skin_id:
-            next_id = None
-            digit_ids = sorted([int(entry_id) for entry_id in user_skins.keys() if entry_id.isdigit()])
-            if digit_ids:
-                next_id = str(digit_ids[0])
+            digit_ids = sorted([int(eid) for eid in user_skins.keys() if eid.isdigit()])
+            next_id = str(digit_ids[0]) if digit_ids else None
 
             if next_id is not None:
-                winreg.SetValueEx(registry_key, CURRENT_EQUIPED_SKIN_VALUE, 0, winreg.REG_SZ, next_id)
-                for hashed_name in _find_hashed_value_names(registry_key, CURRENT_EQUIPED_SKIN_VALUE):
-                    winreg.SetValueEx(registry_key, hashed_name, 0, winreg.REG_SZ, next_id)
+                key.set_value(CURRENT_EQUIPED_SKIN_VALUE, next_id)
+                for hashed_name in _find_hashed_value_names(key, CURRENT_EQUIPED_SKIN_VALUE):
+                    key.set_value(hashed_name, next_id)
             else:
-                for hashed_name in _find_hashed_value_names(registry_key, CURRENT_EQUIPED_SKIN_VALUE):
+                for hashed_name in _find_hashed_value_names(key, CURRENT_EQUIPED_SKIN_VALUE):
                     try:
-                        winreg.DeleteValue(registry_key, hashed_name)
+                        key.delete_value(hashed_name)
                     except FileNotFoundError:
                         pass
                 try:
-                    winreg.DeleteValue(registry_key, CURRENT_EQUIPED_SKIN_VALUE)
+                    key.delete_value(CURRENT_EQUIPED_SKIN_VALUE)
                 except FileNotFoundError:
                     pass
 
 
 def clear_modded_skins() -> None:
     managed_values = [USER_SKINS_VALUE, USER_NAME_SKINS_VALUE, CURRENT_EQUIPED_SKIN_VALUE]
+    reg = _get_reg()
     try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REGISTRY_PATH, 0, winreg.KEY_ALL_ACCESS) as registry_key:
+        with create_key(reg, REGISTRY_KEY_PATH) as key:
             for base_name in managed_values:
-                for hashed_name in _find_hashed_value_names(registry_key, base_name):
+                for hashed_name in _find_hashed_value_names(key, base_name):
                     try:
-                        winreg.DeleteValue(registry_key, hashed_name)
+                        key.delete_value(hashed_name)
                     except FileNotFoundError:
                         pass
                 try:
-                    winreg.DeleteValue(registry_key, base_name)
+                    key.delete_value(base_name)
                 except FileNotFoundError:
                     pass
     except FileNotFoundError:
