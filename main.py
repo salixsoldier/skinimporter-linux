@@ -17,11 +17,17 @@ Changes from the upstream Windows version
 6.  Icon loading uses .png only (no .ico, which requires Windows).
 7.  The app ID call (SetCurrentProcessExplicitAppUserModelID) is silently
     skipped (the try/except was already there in the original).
+8.  Mouse wheel scrolling enabled on all scrollable frames (Linux doesn't
+    bind it automatically in CustomTkinter).
+9.  File picker uses kdialog (KDE native) when available, falls back to
+    tkinter's built-in dialog otherwise.
 """
 
 import io
 import base64
 import os
+import shutil
+import subprocess
 import threading
 import tkinter
 import tkinter.filedialog
@@ -66,6 +72,88 @@ def show_error(title: str, message: str) -> None:
 def show_warning(title: str, message: str) -> None:
     log_message("WARNING", title, message)
     tkinter.messagebox.showwarning(title, message)
+
+
+# ---------------------------------------------------------------------------
+# Native file picker (kdialog on KDE, fallback to tkinter)
+# ---------------------------------------------------------------------------
+
+def _has_kdialog() -> bool:
+    return shutil.which("kdialog") is not None
+
+
+def pick_files(title: str = "Select files", filetypes: str = "*.png") -> list[str]:
+    """
+    Open a file picker and return a list of selected file paths.
+    Uses kdialog on KDE Plasma, falls back to tkinter otherwise.
+    filetypes is passed to kdialog as a glob pattern.
+    """
+    if _has_kdialog():
+        try:
+            result = subprocess.run(
+                ["kdialog", "--title", title, "--getopenfilename",
+                 os.path.expanduser("~"), filetypes, "--multiple"],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                # kdialog returns newline-separated paths
+                return [p for p in result.stdout.strip().splitlines() if p]
+        except Exception:
+            pass
+    # fallback
+    paths = tkinter.filedialog.askopenfilenames(
+        title=title,
+        filetypes=[("PNG files", "*.png"), ("All files", "*.*")]
+    )
+    return list(paths)
+
+
+def pick_folder(title: str = "Select folder") -> str | None:
+    """
+    Open a folder picker and return the chosen path, or None if cancelled.
+    Uses kdialog on KDE Plasma, falls back to tkinter otherwise.
+    """
+    if _has_kdialog():
+        try:
+            result = subprocess.run(
+                ["kdialog", "--title", title, "--getexistingdirectory",
+                 os.path.expanduser("~")],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except Exception:
+            pass
+    # fallback
+    folder = tkinter.filedialog.askdirectory(title=title)
+    return folder or None
+
+
+# ---------------------------------------------------------------------------
+# Mouse wheel scroll binding
+# ---------------------------------------------------------------------------
+
+def _bind_mousewheel(widget: tkinter.Widget) -> None:
+    """
+    Bind mouse wheel events to a CustomTkinter scrollable frame.
+    On Linux, CustomTkinter doesn't attach these automatically.
+    """
+    canvas = getattr(widget, "_parent_canvas", None)
+    if canvas is None:
+        return
+
+    def on_wheel(event: tkinter.Event) -> None:
+        # Button-4 = scroll up, Button-5 = scroll down (X11)
+        if event.num == 4:
+            canvas.yview_scroll(-1, "units")
+        elif event.num == 5:
+            canvas.yview_scroll(1, "units")
+        else:
+            # Delta-based (some setups send this instead)
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    canvas.bind_all("<Button-4>", on_wheel)
+    canvas.bind_all("<Button-5>", on_wheel)
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +350,7 @@ class App(customtkinter.CTk):
         self._preview_cols = 3
         self.preview_scroll.grid_columnconfigure((0, 1, 2), weight=1)
         self.preview_scroll._parent_canvas.bind("<Configure>", self._on_preview_scroll_resize)
+        _bind_mousewheel(self.preview_scroll)
 
         self._preview_images: list = []
         self._preview_cards: list[dict] = []
@@ -312,11 +401,12 @@ class App(customtkinter.CTk):
         self._browse_skins_data: list[dict] = []
         self.browse_scroll.grid_columnconfigure((0, 1, 2), weight=1)
         self.browse_scroll._parent_canvas.bind("<Configure>", self._on_browse_scroll_resize)
+        _bind_mousewheel(self.browse_scroll)
 
         self._browse_skin_images: list = []
 
     def _pick_skin_folder(self) -> None:
-        folder = tkinter.filedialog.askdirectory(title="Select folder containing skin PNGs")
+        folder = pick_folder(title="Select folder containing skin PNGs")
         if not folder:
             return
         self.browse_folder_entry.delete(0, "end")
@@ -456,6 +546,7 @@ class App(customtkinter.CTk):
         self._manage_skins_data: list[dict] = []
         self.manage_scroll.grid_columnconfigure((0, 1, 2), weight=1)
         self.manage_scroll._parent_canvas.bind("<Configure>", self._on_manage_scroll_resize)
+        _bind_mousewheel(self.manage_scroll)
 
         self._manage_skin_images: list = []
 
@@ -548,7 +639,7 @@ class App(customtkinter.CTk):
         return "✘  No prefix set — skin operations will fail."
 
     def _browse_prefix_folder(self) -> None:
-        folder = tkinter.filedialog.askdirectory(
+        folder = pick_folder(
             title="Select Proton prefix folder (the 'pfx' directory containing user.reg)"
         )
         if folder:
@@ -625,10 +716,7 @@ class App(customtkinter.CTk):
     # -----------------------------------------------------------------------
 
     def browse_skin_files(self) -> None:
-        paths = tkinter.filedialog.askopenfilenames(
-            title="Select skin files",
-            filetypes=[("PNG files", "*.png"), ("All files", "*.*")]
-        )
+        paths = pick_files(title="Select skin files", filetypes="*.png")
         for path in paths:
             if any(entry["path"] == path for entry in self._preview_cards):
                 continue
